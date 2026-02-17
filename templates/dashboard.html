@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Molty/Mort Royale Multi-Agent Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        body { font-family: Arial; margin: 20px; }
+        .slot { margin-bottom: 15px; border: 1px solid #ccc; padding: 10px; }
+        #console { width: 100%; height: 400px; font-family: monospace; background: #111; color: #0f0; padding: 10px; overflow-y: scroll; }
+    </style>
+</head>
+<body>
+    <h1>Multi-Agent Bot Dashboard (5 Slots)</h1>
+
+    <h2>Generate Akun Baru</h2>
+    <form id="genForm">
+        <input type="text" name="name" placeholder="Nama custom (opsional)">
+        <button type="button" onclick="generate()">Create Account</button>
+    </form>
+    <div id="genResult"></div>
+
+    <hr>
+
+    <form method="POST" action="/save_keys">
+        {% for slot in range(1,6) %}
+        <div class="slot">
+            <strong>Slot {{ slot }} ({{ agents[slot].name if agents[slot] else 'Kosong' }})</strong><br>
+            Name: <input type="text" name="name_{{ slot }}" value="{{ keys[slot].name or '' }}" style="width:200px;"><br>
+            API Key: <input type="text" name="key_{{ slot }}" value="{{ keys[slot].key or '' }}" style="width:400px;"><br>
+            Status: {{ 'Running' if agents[slot].running else 'Stopped/No Key' }}
+        </div>
+        {% endfor %}
+        <button type="submit">Save & Restart Agents</button>
+    </form>
+
+    <hr>
+    <h2>Real-time Console Logs</h2>
+    <pre id="console"></pre>
+
+    <script>
+        const socket = io();
+        const consoleDiv = document.getElementById('console');
+        socket.on('console_log', function(msg) {
+            consoleDiv.innerHTML += msg.data + '\n';
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        });
+
+        function generate() {
+            const formData = new FormData(document.getElementById('genForm'));
+            fetch('/generate_account', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('genResult').innerHTML = data.message;
+                    if (data.success) location.reload();
+                });
+        }
+    </script>
+</body>
+</html>
