@@ -21,7 +21,7 @@ logger.addHandler(QueueHandler())
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'super-secret-change-me')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///agents.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'postgresql://postgres:aqzTxaTmylBvVRcwDrwslGHKJjpTmhYD@postgres.railway.internal:5432/railway')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins="*")
@@ -45,14 +45,12 @@ def broadcast_logs():
         except queue.Empty:
             continue
 
-# Class Agent (dari kode kamu, dengan sedikit penyesuaian logging)
 class NappAgent:
     def __init__(self, slot):
         self.slot = slot
         self.name = AGENT_NAMES[slot-1]
         self.api_key = None
-        self.load_key()
-        self.headers = {"X-API-Key": self.api_key, "Content-Type": "application/json"} if self.api_key else {}
+        self.headers = {}
         self.game_id = None
         self.agent_id = None
         self.last_known_game_id = None
@@ -60,27 +58,21 @@ class NappAgent:
         self.previous_region_id = None
         self.running = False
         self.thread = None
+        self.load_key()
 
     def load_key(self):
         entry = ApiKey.query.filter_by(slot=self.slot).first()
         if entry:
             self.api_key = entry.api_key
             self.name = entry.name or self.name
+            self.headers = {"X-API-Key": self.api_key, "Content-Type": "application/json"}
+        else:
+            self.api_key = None
+            self.headers = {}
 
     def log(self, msg):
         logger.info(f"[Slot {self.slot} - {self.name}] {msg}")
 
-
-    # Paste semua method lain dari kode asli kamu di sini:
-    # send_action, get_state, recover_agent_id, find_and_join_game,
-    # get_best_weapon, get_item_stats, get_safe_move_target, free_actions, decide_action, run_loop
-    #
-    # Contoh penyesuaian kecil di run_loop:
-    # Ganti print/log biasa jadi self.log(...)
-    # Tambah check self.running di while loop:
-    # while self.running:
-    #     ... (kode loop kamu)
-    #     time.sleep(61)
     def send_action(self, action_obj, thought=""):
         try:
             payload = {
@@ -93,7 +85,7 @@ class NappAgent:
             )
             return res.json() if res.ok else {"success": False, "message": res.text}
         except Exception as e:
-            log(self.index, f"Action error: {e}")
+            self.log(f"Action error: {e}")
             return {"success": False}
 
     def get_state(self):
@@ -105,10 +97,10 @@ class NappAgent:
             if res.status_code == 200:
                 return res.json()["data"]
             else:
-                log(self.index, f"State HTTP error: {res.status_code} - {res.text[:100]}")
+                self.log(f"State HTTP error: {res.status_code} - {res.text[:100]}")
                 return None
         except Exception as e:
-            log(self.index, f"Get state exception: {e}")
+            self.log(f"Get state exception: {e}")
             return None
 
     def recover_agent_id(self, game_id):
@@ -119,44 +111,42 @@ class NappAgent:
                 agents = data.get("agents", [])
                 for a in agents:
                     if a.get("name") == self.name:
-                        log(self.index, f"Recover sukses → Agent ID: {a['id']} di game {game_id}")
+                        self.log(f"Recover sukses → Agent ID: {a['id']} di game {game_id}")
                         return a["id"]
-                log(self.index, f"Nama {self.name} tidak ditemukan di game {game_id}")
+                self.log(f"Nama {self.name} tidak ditemukan di game {game_id}")
             else:
-                log(self.index, f"Gagal get state game {game_id} → status {res.status_code}")
+                self.log(f"Gagal get state game {game_id} → status {res.status_code}")
         except Exception as e:
-            log(self.index, f"Recover error: {e}")
+            self.log(f"Recover error: {e}")
         return None
 
     def find_and_join_game(self):
-        log(self.index, "Mulai cari atau recover game...")
+        self.log("Mulai cari atau recover game...")
         max_wait_attempts = 20
         attempt = 0
 
         while not self.agent_id and attempt < max_wait_attempts:
             attempt += 1
             try:
-                # Prioritas 1: Recover di last_known_game_id kalau ada
                 if self.last_known_game_id:
-                    log(self.index, f"Prioritas recover di last known game: {self.last_known_game_id}")
+                    self.log(f"Prioritas recover di last known game: {self.last_known_game_id}")
                     recovered_id = self.recover_agent_id(self.last_known_game_id)
                     if recovered_id:
                         self.game_id = self.last_known_game_id
                         self.agent_id = recovered_id
-                        log(self.index, "Recover berhasil di last known game → lanjut")
+                        self.log("Recover berhasil di last known game → lanjut")
                         return
 
-                # Cari game waiting
                 res = requests.get(f"{BASE_URL}/games?status=waiting")
                 games = res.json().get("data", [])
 
                 if not games:
-                    log(self.index, f"Tidak ada game waiting... tunggu 15 detik (attempt {attempt}/{max_wait_attempts})")
+                    self.log(f"Tidak ada game waiting... tunggu 15 detik (attempt {attempt}/{max_wait_attempts})")
                     time.sleep(15)
                     continue
 
                 self.game_id = games[0]["id"]
-                log(self.index, f"Found waiting game: {self.game_id}")
+                self.log(f"Found waiting game: {self.game_id}")
 
                 reg = requests.post(
                     f"{BASE_URL}/games/{self.game_id}/agents/register",
@@ -165,49 +155,46 @@ class NappAgent:
 
                 if reg.status_code == 201:
                     self.agent_id = reg.json()["data"]["id"]
-                    self.last_known_game_id = self.game_id  # Update last known
-                    log(self.index, f"Join sukses! Agent ID: {self.agent_id}")
+                    self.last_known_game_id = self.game_id
+                    self.log(f"Join sukses! Agent ID: {self.agent_id}")
                     return
 
                 elif "ONE_AGENT_PER_API_KEY" in reg.text or "ACCOUNT_ALREADY_IN_GAME" in reg.text:
-                    log(self.index, "Akun sudah di game lain → coba recover dari error atau last known")
-                    # Coba recover dari current_game di error response
+                    self.log("Akun sudah di game lain → coba recover")
                     try:
                         err_data = reg.json()
                         current_game = err_data.get("error", {}).get("currentGameId")
                         if current_game:
-                            log(self.index, f"Recover dari error currentGameId: {current_game}")
+                            self.log(f"Recover dari error currentGameId: {current_game}")
                             recovered_id = self.recover_agent_id(current_game)
                             if recovered_id:
                                 self.game_id = current_game
                                 self.agent_id = recovered_id
                                 self.last_known_game_id = self.game_id
-                                log(self.index, "Recover berhasil dari error → tunggu game start")
+                                self.log("Recover berhasil dari error → tunggu game start")
                                 return
                     except:
                         pass
 
-                    # Fallback: recover di last known kalau ada
                     if self.last_known_game_id:
                         recovered_id = self.recover_agent_id(self.last_known_game_id)
                         if recovered_id:
                             self.game_id = self.last_known_game_id
                             self.agent_id = recovered_id
-                            log(self.index, "Fallback recover berhasil di last known → tunggu game start")
+                            self.log("Fallback recover berhasil di last known → tunggu game start")
                             return
 
                 else:
-                    log(self.index, f"Register gagal: {reg.text[:100]}")
+                    self.log(f"Register gagal: {reg.text[:100]}")
 
                 time.sleep(15)
 
             except Exception as e:
-                log(self.index, f"Find/join error: {e}")
+                self.log(f"Find/join error: {e}")
                 time.sleep(15)
 
-        if not self.agent_id:
-            log(self.index, "Gagal join/recover setelah max attempt → exit")
-            sys.exit(1)
+        self.log("Gagal join/recover setelah max attempt → akan dicoba lagi nanti")
+        # Tidak exit, biarkan loop utama handle retry
 
     def get_best_weapon(self, inventory):
         weapons = [i for i in inventory if i.get("category") == "weapon"]
@@ -250,7 +237,7 @@ class NappAgent:
             if self.previous_region_id not in self.avoided_deathzone_ids and \
                not (self.previous_region_id in visible_regions and visible_regions[self.previous_region_id].get("isDeathZone", False)) and \
                self.previous_region_id not in pending_dz:
-                log(self.index, f"FORCE BACKTRACK dari DZ → kembali ke previous {self.previous_region_id[:8]}...")
+                self.log(f"FORCE BACKTRACK dari DZ → kembali ke previous {self.previous_region_id[:8]}...")
                 target = self.previous_region_id
                 self.previous_region_id = region["id"]
                 return target
@@ -259,29 +246,29 @@ class NappAgent:
             if self.previous_region_id not in self.avoided_deathzone_ids and \
                not (self.previous_region_id in visible_regions and visible_regions[self.previous_region_id].get("isDeathZone", False)) and \
                self.previous_region_id not in pending_dz:
-                log(self.index, f"Backtrack → kembali ke previous {self.previous_region_id[:8]}...")
+                self.log(f"Backtrack → kembali ke previous {self.previous_region_id[:8]}...")
                 target = self.previous_region_id
                 self.previous_region_id = region["id"]
                 return target
 
         if safe:
             target = random.choice(safe)
-            log(self.index, f"Safe move → {target[:8]}... ({len(safe)} opsi | avoided: {len(self.avoided_deathzone_ids)})")
+            self.log(f"Safe move → {target[:8]}... ({len(safe)} opsi | avoided: {len(self.avoided_deathzone_ids)})")
             self.previous_region_id = region["id"]
             return target
 
         if risky:
             if len(risky) <= 2:
                 target = random.choice(risky)
-                log(self.index, f"FORCED ke risk (sisa {len(risky)} opsi) → {target[:8]}...")
+                self.log(f"FORCED ke risk (sisa {len(risky)} opsi) → {target[:8]}...")
             else:
                 target = random.choice(risky)
-                log(self.index, f"No safe → random risky {target[:8]}... (risky: {len(risky)})")
+                self.log(f"No safe → random risky {target[:8]}... (risky: {len(risky)})")
             self.previous_region_id = region["id"]
             return target
 
         target = random.choice(connections)
-        log(self.index, f"CRITICAL: Semua avoided/risk → forced {target[:8]}...")
+        self.log(f"CRITICAL: Semua avoided/risk → forced {target[:8]}...")
         self.previous_region_id = region["id"]
         return target
 
@@ -291,17 +278,15 @@ class NappAgent:
         inv = me.get("inventory", [])
         inv_count = len(inv)
 
-        # Gunakan Map kalau ada (tetap di atas)
         map_item = next((i for i in inv if i.get("typeId") == "map" or i.get("name") == "Map"), None)
         if map_item:
-            log(self.index, f"Gunakan Map untuk reveal full map")
+            self.log(f"Gunakan Map untuk reveal full map")
             self.send_action({"type": "use_item", "itemId": map_item["id"]}, "Reveal map hindari DZ")
             data = self.get_state() or data
             me = data["self"]
             inv = me.get("inventory", [])
             inv_count = len(inv)
 
-        # Sisakan space untuk weapon (tetap)
         if inv_count > 8:
             equipped_weapon = me.get("equippedWeapon")
             equipped_stats = self.get_item_stats(equipped_weapon)
@@ -309,16 +294,13 @@ class NappAgent:
                          (i.get("category") == "weapon" and self.get_item_stats(i) < equipped_stats)]
             if droppable:
                 drop_item = min(droppable, key=lambda x: self.get_item_stats(x) if x.get("category") == "weapon" else 999)
-                log(self.index, f"Drop {drop_item.get('name', 'item')} untuk space weapon")
+                self.log(f"Drop {drop_item.get('name', 'item')} untuk space weapon")
                 self.send_action({"type": "drop", "itemId": drop_item["id"]}, "Buat space loot weapon")
                 data = self.get_state() or data
                 me = data["self"]
                 inv = me.get("inventory", [])
                 inv_count = len(inv)
 
-        # ────────────────────────────────────────────────────────────────
-        # 1. PRIORITAS TERTINGGI: Pickup WEAPON yang lebih baik dulu
-        # ────────────────────────────────────────────────────────────────
         visible_weapons = [
             item_entry["item"]
             for item_entry in data.get("visibleItems", [])
@@ -328,56 +310,48 @@ class NappAgent:
         if visible_weapons and inv_count < 10:
             equipped_weapon = me.get("equippedWeapon")
             current_stats = self.get_item_stats(equipped_weapon)
-
-            # Cari weapon terbaik yang terlihat
             best_visible = max(visible_weapons, key=lambda x: self.get_item_stats(x), default=None)
 
             if best_visible and self.get_item_stats(best_visible) > current_stats:
-                log(self.index, f"PRIORITAS WEAPON → Ambil {best_visible.get('name')} (+{self.get_item_stats(best_visible)} > {current_stats})")
+                self.log(f"PRIORITAS WEAPON → Ambil {best_visible.get('name')} (+{self.get_item_stats(best_visible)} > {current_stats})")
                 self.send_action({"type": "pickup", "itemId": best_visible["id"]}, "Ambil weapon high-tier dulu")
                 inv_count += 1
                 data = self.get_state() or data
                 me = data["self"]
                 inv = me.get("inventory", [])
 
-                # Force equip kalau belum punya senjata
                 equipped_after = me.get("equippedWeapon")
                 if equipped_after is None or self.get_item_stats(equipped_after) < self.get_item_stats(best_visible):
-                    log(self.index, f"FORCE EQUIP high-tier: {best_visible.get('name')}")
+                    self.log(f"FORCE EQUIP high-tier: {best_visible.get('name')}")
                     self.send_action({"type": "equip", "itemId": best_visible["id"]}, "Equip weapon high-tier langsung")
                     data = self.get_state() or data
                     me = data["self"]
                     inv = me.get("inventory", [])
 
-        # ────────────────────────────────────────────────────────────────
-        # 2. Baru setelah weapon → ambil currency ($Moltz)
-        # ────────────────────────────────────────────────────────────────
         for item_entry in data.get("visibleItems", []):
             if item_entry.get("regionId") != region_id or inv_count >= 10:
                 continue
             item = item_entry["item"]
             if item.get("category") == "currency" and "$Moltz" in item.get("name", ""):
-                log(self.index, f"Ambil $Moltz ({item.get('quantity', 1)})")
+                self.log(f"Ambil $Moltz ({item.get('quantity', 1)})")
                 self.send_action({"type": "pickup", "itemId": item["id"]}, "Ambil currency setelah cek weapon")
                 inv_count += 1
                 data = self.get_state() or data
                 me = data["self"]
                 inv = me.get("inventory", [])
 
-        # Recovery (tetap setelah currency, atau bisa dinaikkan prioritas kalau mau)
         for item_entry in data.get("visibleItems", []):
             if item_entry.get("regionId") != region_id or inv_count >= 10:
                 continue
             item = item_entry["item"]
             if item.get("category") == "recovery":
-                log(self.index, f"Pickup recovery: {item.get('name')}")
+                self.log(f"Pickup recovery: {item.get('name')}")
                 self.send_action({"type": "pickup", "itemId": item["id"]}, "Ambil heal")
                 inv_count += 1
                 data = self.get_state() or data
                 me = data["self"]
                 inv = me.get("inventory", [])
 
-        # Equip best weapon kalau belum (bagian ini tetap)
         best = self.get_best_weapon(inv)
         if best:
             equipped = me.get("equippedWeapon")
@@ -386,7 +360,7 @@ class NappAgent:
             is_equipped = best.get("isEquipped", False)
 
             if not is_equipped and (best_dmg > eq_dmg or equipped is None):
-                log(self.index, f"Equip best: {best['name']} (+{best_dmg})")
+                self.log(f"Equip best: {best['name']} (+{best_dmg})")
                 self.send_action({"type": "equip", "itemId": best["id"]}, "Equip weapon terbaik")
 
     def decide_action(self, data):
@@ -411,7 +385,7 @@ class NappAgent:
         if interactables and ep >= 1:
             for fac in interactables:
                 if not fac.get("isUsed", False) and "medical" in fac.get("type", "").lower() and hp <= 70:
-                    log(self.index, f"Interact medical (HP {hp})")
+                    self.log(f"Interact medical (HP {hp})")
                     return {"type": "interact", "interactableId": fac["id"]}, "Heal medical"
 
         if hp < 55:
@@ -425,32 +399,22 @@ class NappAgent:
         if ep <= 1:
             return {"type": "rest"}, "Rest EP"
 
-        # ────────────────────────────────────────────────
-        #  BAGIAN MONSTER - sudah diubah sesuai permintaan
-        # ────────────────────────────────────────────────
         monsters_here = [m for m in data.get("visibleMonsters", []) 
                         if m["regionId"] == me["regionId"]]
 
         if monsters_here and ep >= 2:
             equipped = me.get("equippedWeapon") is not None
-            
-            # Kita pisah bandit dan non-bandit
             bandits = [m for m in monsters_here if "bandit" in m.get("name", "").lower()]
             other_monsters = [m for m in monsters_here if m not in bandits]
 
-            # Prioritas 1: serang monster selain bandit (bahkan tanpa equip)
             if other_monsters:
-                target = other_monsters[0]  # ambil yang pertama saja, atau bisa sort nanti
+                target = other_monsters[0]
                 return {"type": "attack", "targetId": target["id"], "targetType": "monster"}, f"Farm non-bandit {target.get('name', 'monster')}"
 
-            # Prioritas 2: bandit hanya kalau sudah equip
             if equipped and bandits:
                 target = bandits[0]
                 return {"type": "attack", "targetId": target["id"], "targetType": "monster"}, f"Farm Bandit (equip OK) {target.get('name')}"
 
-        # ────────────────────────────────────────────────
-        #  KERJASAMA SESAMA BOT + ADA PLAYER LAIN
-        # ────────────────────────────────────────────────
         players_here = [a for a in data.get("visibleAgents", []) 
                        if a["id"] != self.agent_id 
                        and a.get("isAlive", True) 
@@ -459,13 +423,9 @@ class NappAgent:
         bot_teammates_here = [a for a in players_here if a.get("name", "").startswith("regedx")]
         real_players_here = [a for a in players_here if not a.get("name", "").startswith("regedx")]
 
-        # Jika ada bot lain di ruangan + ada player manusia
         if bot_teammates_here and real_players_here and ep >= 3 and me.get("equippedWeapon"):
             has_recovery = any(i["category"] == "recovery" for i in inv)
-            
-            # Syarat kerjasama: HP cukup aman
             if (hp > 70 or (hp > 50 and has_recovery)):
-                # Pilih target player yang paling lemah / menguntungkan
                 candidates = []
                 my_atk = me["atk"] + (me.get("equippedWeapon", {}).get("atkBonus", 0) or 0)
                 my_def = me["def"]
@@ -480,7 +440,7 @@ class NappAgent:
                     moltz_bonus = sum(i.get("quantity", 0) for i in p.get("inventory", []) if i.get("category") == "currency") * 2
                     
                     score = (100 - p_hp) * 3 + moltz_bonus - (turns_to_kill * 5) - (threat * 1.2)
-                    if score > 25:  # threshold agak dilonggarkan untuk kerjasama
+                    if score > 25:
                         candidates.append((score, p))
 
                 if candidates:
@@ -489,7 +449,6 @@ class NappAgent:
                     return {"type": "attack", "targetId": target["id"], "targetType": "agent"}, \
                            f"Kerjasama bunuh player {target['name']} (HP {target['hp']}, score {candidates[0][0]:.1f})"
 
-        # Fallback biasa (move / rest)
         target = self.get_safe_move_target(data)
         if target:
             return {"type": "move", "regionId": target}, "Cari spot farm aman"
@@ -556,10 +515,11 @@ class NappAgent:
                 time.sleep(61)
 
             except Exception as e:
-                self.log(f"Loop error: {e}")
+                self.log(f"Loop error: {str(e)}")
                 time.sleep(15)
 
-        self.log("run_loop telah dihentikan (self.running = False)")
+        self.log("run_loop telah dihentikan")
+
     def start(self):
         if not self.api_key:
             self.log("No API key → skipped")
@@ -576,7 +536,7 @@ class NappAgent:
         self.running = False
         self.log("Stopping... (will finish current cycle)")
 
-# Inisialisasi DB & agents global
+# Global agents
 agents = {i: NappAgent(i) for i in range(1, 6)}
 
 @app.route('/')
@@ -599,9 +559,8 @@ def save_keys():
             entry.name = name
             db.session.commit()
             agents[slot].load_key()
-            agents[slot].start()  # auto-start setelah save
+            agents[slot].start()
         else:
-            # Hapus kalau key dikosongkan
             entry = ApiKey.query.filter_by(slot=slot).first()
             if entry:
                 db.session.delete(entry)
@@ -620,7 +579,6 @@ def generate_account():
         data = res.json()
         api_key = data['data']['apiKey']
 
-        # Cari slot kosong
         used_slots = {e.slot for e in ApiKey.query.all()}
         free_slot = next((s for s in range(1,6) if s not in used_slots), None)
 
@@ -638,7 +596,6 @@ def generate_account():
     except Exception as e:
         return jsonify({'success': False, 'message': f'Gagal create account: {str(e)}'})
 
-# SocketIO connect
 @socketio.on('connect')
 def handle_connect():
     emit('console_log', {'data': '=== Connected to live console ==='})
@@ -647,10 +604,8 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
 
-    # Start broadcaster
     threading.Thread(target=broadcast_logs, daemon=True).start()
 
-    # Auto-start agents yang punya key
     for agent in agents.values():
         if agent.api_key:
             agent.start()
