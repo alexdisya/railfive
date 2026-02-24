@@ -1,5 +1,0 @@
-requests
-flask
-flask-socketio
-eventlet
-python-dotenv  # optional, kalau masih mau fallback .env
